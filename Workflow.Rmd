@@ -1,0 +1,124 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sbm)
+library(ggplot2)
+library(igraph)
+library(knitr)
+library(alluvial)
+
+```
+
+## Data Preparation and pre-processing
+```{r}
+lnc <- read.table("~/CLASS/Justin/data/lncRNA_interaction.txt", "\t",header = T,finc = T)
+
+#only RNA-protein interactions
+rna_protein <- lnc[lnc$level == "RNA-Protein",]
+
+#only lncRNA-protein interactions
+lnc_protein <- rna_protein[rna_protein$ncType == "lncRNA" & rna_protein$tarType == "protein",]
+
+#only human lncRNA-protein interactions
+human_lnc_protein <- rna_protein[rna_protein$ncType == "lncRNA" & rna_protein$tarType == "protein"& rna_protein$organism == "Homo sapiens",]
+
+#filter out other information for adjacency matrix
+human_interaction <- dplyr::select(human_lnc_protein, ncName, tarName)
+rownames(human_interaction)<-NULL
+
+human_interaction$ncName <- factor(human_interaction$ncName)
+human_interaction$tarName <- factor(human_interaction$tarName)
+
+f_lnc <- read.table("~/CLASS/Justin/data/filtered_lncRNA_Protein.txt", ",",header = F)
+
+f_lnc$V1 <- factor(f_lnc$V1)
+f_lnc$V2 <- factor(f_lnc$V2)
+
+#filter out degrees <= 1
+f_human_interaction <- human_interaction[human_interaction$ncName %in% f_lnc$V1 & human_interaction$tarName %in% f_lnc$V2,]
+
+f_human_interaction$ncName <- factor(f_human_interaction$ncName)
+f_human_interaction$tarName <- factor(f_human_interaction$tarName)
+
+#convert the filtered lncRNA-protein interactions to an adjacency matrix
+tmp_matrix <- table(f_human_interaction)
+
+tmp <- data.frame(rbind(tmp_matrix))
+
+tmp <- as.matrix(tmp)
+
+#number of lncRNA 9630
+num_of_lnc <- nrow(tmp)
+#number of protein 290
+num_of_protein <- ncol(tmp)
+
+write.csv(f_human_interaction, file = '~/CLASS/Justin/CSCI3352-Project/01_Data_Preparation/results/Human_Lnc_Protein_interaction_Meta_Data.csv')
+
+```
+
+## LPBNI
+```{r}
+B = t(t(tmp))
+nc = nrow(B)
+tar = ncol(B)
+W=matrix(0,tar,tar)
+deci=matrix(0,tar,nc)
+
+for (i in 1:tar)
+{
+gmq=matrix(rep(B[ ,i],tar),nc,tar)*B
+q=apply(gmq,2,function(gmq,a) gmq/a,a=matrix(rowSums(B),nc,1))
+W[i,1:tar]=(1/colSums(B))*colSums(q)        
+}
+
+for (j in 1:nc)
+{
+f0=B[j, ]
+f1=W %*% f0
+deci[1:tar,j]=f1
+}
+```
+
+
+## Bipartite SBM
+```{r}
+# Plot the adjacency matrix
+plotMyMatrix(tmp, dimLabels = list(row = 'nc', col = 'tar') )
+
+# Estimate bipartite sbm of our adjacency matrix
+BipartiteSBM <- 
+  tmp %>% 
+  estimateBipartiteSBM(model = 'bernounci', estimOptions = list(verbosity = 0, plot = FALSE, nbCores = 8))
+
+plot(BipartiteSBM, dimLabels = list(row = 'nc', col = 'tar'))
+
+BipartiteSBM$storedModels %>% kable()
+
+#when nbparams = 257, 270, 283 and nblocks = 31, 32, 33 we have the lowest ICL
+BipartiteSBM$storedModels %>% 
+  ggplot() + aes(x = nbBlocks, y = ICL) + geom_line() + geom_point(alpha = 0.5)
+ggsave('~/CLASS/Justin/CSCI3352-Project/01_Data_Preparation/figures/ICL_trend_No_filtered.png')
+
+#set models with 33 clusters, 12 lncRNA clusters, 21 protein clusters
+BipartiteSBM$setModel(33)
+
+BipartiteSBM$print()
+
+BipartiteSBM$blockProp
+
+BipartiteSBM$probMemberships
+
+lnc_clust <- BipartiteSBM$memberships
+
+#overview of row clusters labels
+table(unlist(lnc_clust$row))
+#overview of column clusters labels
+table(unlist(lnc_clust$col))
+
+#retrieve which proteins are labeled cluster-20
+ind <- which(lnc_clust$col == 20)
+
+pro_list <- colnames(tmp)
+lnc_list <- rownames(tmp)
+
+clust_20 <- pro_list[which(lnc_clust$col == 20)]
